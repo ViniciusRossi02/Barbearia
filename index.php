@@ -237,7 +237,7 @@ for ($i = 0; $i < 7; $i++) {
 <body>
 
 <header>
-  <div class="logo">Barbearia <span>/ Agendamento</span></div>
+  <div class="logo">Borges Barbearia <span>/ Agendamento</span></div>
   <a href="login.php">Área do barbeiro</a>
 </header>
 
