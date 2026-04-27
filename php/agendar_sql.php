@@ -4,13 +4,17 @@
 //  CONEXÃO
 // ============================================================
 
-function conectar_banco(): PDO {
-    $host   = 'localhost';
-    $banco  = 'barbearia';
-    $usuario = 'root';
-    $senha  = '12345';
+function conectar_banco(): PDO
+{
+    // No Railway as credenciais vêm das variáveis de ambiente
+    // Localmente (XAMPP) usa os valores padrão como fallback
+    $host    = getenv('MYSQLHOST')     ?: 'localhost';
+    $banco   = getenv('MYSQLDATABASE') ?: 'barbearia';
+    $usuario = getenv('MYSQLUSER')     ?: 'root';
+    $senha   = getenv('MYSQLPASSWORD') ?: '12345';
+    $porta   = getenv('MYSQLPORT')     ?: '3306';
 
-    $pdo = new PDO("mysql:host=$host;dbname=$banco;charset=utf8mb4", $usuario, $senha);
+    $pdo = new PDO("mysql:host=$host;port=$porta;dbname=$banco;charset=utf8mb4", $usuario, $senha);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     return $pdo;
 }
@@ -20,7 +24,8 @@ function conectar_banco(): PDO {
 //  CRIAR TABELA (rodar uma vez na instalação)
 // ============================================================
 
-function criar_tabela_agendamentos(): void {
+function criar_tabela_agendamentos(): void
+{
     $pdo = conectar_banco();
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS agendamentos (
@@ -30,9 +35,10 @@ function criar_tabela_agendamentos(): void {
             servico    VARCHAR(80)   NOT NULL,
             data       DATE          NOT NULL,
             horario    TIME          NOT NULL,
-            status      ENUM('pendente','confirmado','recusado') DEFAULT 'pendente',
-            observacao  VARCHAR(300)  DEFAULT '',
-            criado_em   TIMESTAMP     DEFAULT CURRENT_TIMESTAMP
+            status     ENUM('pendente','confirmado','recusado') DEFAULT 'pendente',
+            observacao VARCHAR(300)  DEFAULT '',
+            valor      DECIMAL(8,2)  DEFAULT NULL,
+            criado_em  TIMESTAMP     DEFAULT CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     ");
 }
@@ -42,7 +48,8 @@ function criar_tabela_agendamentos(): void {
 //  CLIENTE — salvar novo pedido
 // ============================================================
 
-function marcar_horario(string $nome, string $whatsapp, string $servico, string $data, string $horario, string $observacao = ''): bool {
+function marcar_horario(string $nome, string $whatsapp, string $servico, string $data, string $horario, string $observacao = ''): bool
+{
     $pdo  = conectar_banco();
     $stmt = $pdo->prepare("
         INSERT INTO agendamentos (nome, whatsapp, servico, data, horario, observacao)
@@ -63,7 +70,8 @@ function marcar_horario(string $nome, string $whatsapp, string $servico, string 
 //  CLIENTE — checar se horário já está ocupado
 // ============================================================
 
-function horario_esta_ocupado(string $data, string $horario): bool {
+function horario_esta_ocupado(string $data, string $horario): bool
+{
     $pdo  = conectar_banco();
     $stmt = $pdo->prepare("
         SELECT COUNT(*) FROM agendamentos
@@ -79,7 +87,8 @@ function horario_esta_ocupado(string $data, string $horario): bool {
 //  CLIENTE — listar horários ocupados numa data
 // ============================================================
 
-function listar_horarios_ocupados(string $data): array {
+function listar_horarios_ocupados(string $data): array
+{
     $pdo  = conectar_banco();
     $stmt = $pdo->prepare("
         SELECT horario FROM agendamentos
@@ -94,7 +103,8 @@ function listar_horarios_ocupados(string $data): array {
 //  ADMIN — listar agendamentos por status
 // ============================================================
 
-function listar_agendamentos(string $status = 'pendente'): array {
+function listar_agendamentos(string $status = 'pendente'): array
+{
     $pdo  = conectar_banco();
     $stmt = $pdo->prepare("
         SELECT * FROM agendamentos
@@ -110,11 +120,12 @@ function listar_agendamentos(string $status = 'pendente'): array {
 //  ADMIN — listar agenda de qualquer data selecionada
 // ============================================================
 
-function listar_agenda_por_data(string $data): array {
+function listar_agenda_por_data(string $data): array
+{
     $pdo  = conectar_banco();
     $stmt = $pdo->prepare("
         SELECT * FROM agendamentos
-        WHERE data = :data AND status IN ('confirmado','pendente')
+        WHERE data = :data AND status = 'confirmado'
         ORDER BY horario ASC
     ");
     $stmt->execute([':data' => $data]);
@@ -124,14 +135,18 @@ function listar_agenda_por_data(string $data): array {
 
 // ============================================================
 //  ADMIN — listar próximos dias que têm agendamentos
+//  (inclui passados para não sumir agendamentos já feitos)
 // ============================================================
 
-function listar_proximos_dias(int $quantidade = 14): array {
+function listar_proximos_dias(int $quantidade = 30): array
+{
     $pdo  = conectar_banco();
     $stmt = $pdo->prepare("
         SELECT data, COUNT(*) as total
         FROM agendamentos
-        WHERE data >= CURDATE() AND status IN ('confirmado','pendente')
+        WHERE data BETWEEN DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+                       AND DATE_ADD(CURDATE(), INTERVAL 60 DAY)
+          AND status = 'confirmado'
         GROUP BY data
         ORDER BY data ASC
         LIMIT :qtd
@@ -146,7 +161,8 @@ function listar_proximos_dias(int $quantidade = 14): array {
 //  ADMIN — listar agenda do dia
 // ============================================================
 
-function listar_agenda_do_dia(string $data): array {
+function listar_agenda_do_dia(string $data): array
+{
     $pdo  = conectar_banco();
     $stmt = $pdo->prepare("
         SELECT * FROM agendamentos
@@ -159,13 +175,44 @@ function listar_agenda_do_dia(string $data): array {
 
 
 // ============================================================
-//  ADMIN — confirmar agendamento
+//  ADMIN — confirmar agendamento (com valor opcional)
 // ============================================================
 
-function confirmar_agendamento(int $id): bool {
+function confirmar_agendamento(int $id, ?float $valor = null): bool
+{
     $pdo  = conectar_banco();
     $stmt = $pdo->prepare("
-        UPDATE agendamentos SET status = 'confirmado' WHERE id = :id
+        UPDATE agendamentos
+        SET status = 'confirmado', valor = :valor
+        WHERE id = :id
+    ");
+    return $stmt->execute([':id' => $id, ':valor' => $valor]);
+}
+
+
+// ============================================================
+//  ADMIN — atualizar valor de um agendamento já confirmado
+// ============================================================
+
+function atualizar_valor(int $id, ?float $valor): bool
+{
+    $pdo  = conectar_banco();
+    $stmt = $pdo->prepare("
+        UPDATE agendamentos SET valor = :valor WHERE id = :id
+    ");
+    return $stmt->execute([':id' => $id, ':valor' => $valor]);
+}
+
+
+// ============================================================
+//  ADMIN — desconfirmar (volta para pendente)
+// ============================================================
+
+function desconfirmar_agendamento(int $id): bool
+{
+    $pdo  = conectar_banco();
+    $stmt = $pdo->prepare("
+        UPDATE agendamentos SET status = 'pendente', valor = NULL WHERE id = :id
     ");
     return $stmt->execute([':id' => $id]);
 }
@@ -175,7 +222,8 @@ function confirmar_agendamento(int $id): bool {
 //  ADMIN — recusar agendamento
 // ============================================================
 
-function recusar_agendamento(int $id): bool {
+function recusar_agendamento(int $id): bool
+{
     $pdo  = conectar_banco();
     $stmt = $pdo->prepare("
         UPDATE agendamentos SET status = 'recusado' WHERE id = :id
@@ -188,7 +236,8 @@ function recusar_agendamento(int $id): bool {
 //  ADMIN — contagens para o painel
 // ============================================================
 
-function contar_agendamentos_hoje(): int {
+function contar_agendamentos_hoje(): int
+{
     $pdo  = conectar_banco();
     $stmt = $pdo->prepare("
         SELECT COUNT(*) FROM agendamentos
@@ -198,7 +247,8 @@ function contar_agendamentos_hoje(): int {
     return (int) $stmt->fetchColumn();
 }
 
-function contar_pendentes(): int {
+function contar_pendentes(): int
+{
     $pdo  = conectar_banco();
     $stmt = $pdo->query("
         SELECT COUNT(*) FROM agendamentos WHERE status = 'pendente'
@@ -206,11 +256,14 @@ function contar_pendentes(): int {
     return (int) $stmt->fetchColumn();
 }
 
-function contar_agendamentos_semana(): int {
+// Corrigido: usa intervalo fixo de 7 dias, não YEARWEEK
+function contar_agendamentos_semana(): int
+{
     $pdo  = conectar_banco();
     $stmt = $pdo->query("
         SELECT COUNT(*) FROM agendamentos
-        WHERE YEARWEEK(data, 1) = YEARWEEK(CURDATE(), 1)
+        WHERE data BETWEEN DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)
+                       AND DATE_ADD(DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY), INTERVAL 6 DAY)
           AND status = 'confirmado'
     ");
     return (int) $stmt->fetchColumn();
@@ -218,10 +271,140 @@ function contar_agendamentos_semana(): int {
 
 
 // ============================================================
-//  AUTH — criar tabela de usuários (rodar uma vez)
+//  ADMIN — faturamento
 // ============================================================
 
-function criar_tabela_usuarios(): void {
+function faturamento_do_dia(string $data): float
+{
+    $pdo  = conectar_banco();
+    $stmt = $pdo->prepare("
+        SELECT COALESCE(SUM(valor), 0)
+        FROM agendamentos
+        WHERE data = :data AND status = 'confirmado' AND valor IS NOT NULL
+    ");
+    $stmt->execute([':data' => $data]);
+    return (float) $stmt->fetchColumn();
+}
+
+function faturamento_da_semana(): float
+{
+    $pdo  = conectar_banco();
+    $stmt = $pdo->query("
+        SELECT COALESCE(SUM(valor), 0)
+        FROM agendamentos
+        WHERE data BETWEEN DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)
+                       AND DATE_ADD(DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY), INTERVAL 6 DAY)
+          AND status = 'confirmado' AND valor IS NOT NULL
+    ");
+    return (float) $stmt->fetchColumn();
+}
+
+function faturamento_do_mes(): float
+{
+    $pdo  = conectar_banco();
+    $stmt = $pdo->query("
+        SELECT COALESCE(SUM(valor), 0)
+        FROM agendamentos
+        WHERE MONTH(data) = MONTH(CURDATE())
+          AND YEAR(data)  = YEAR(CURDATE())
+          AND status = 'confirmado' AND valor IS NOT NULL
+    ");
+    return (float) $stmt->fetchColumn();
+}
+
+
+// ============================================================
+//  HISTÓRICO — listar confirmados de datas passadas
+// ============================================================
+
+function listar_historico(int $pagina = 1, int $por_pagina = 20, string $busca = ''): array
+{
+    $pdo    = conectar_banco();
+    $offset = ($pagina - 1) * $por_pagina;
+
+    if ($busca) {
+        $stmt = $pdo->prepare("
+            SELECT * FROM agendamentos
+            WHERE data < CURDATE()
+              AND status = 'confirmado'
+              AND (nome LIKE :busca OR servico LIKE :busca)
+            ORDER BY data DESC, horario DESC
+            LIMIT :limit OFFSET :offset
+        ");
+        $stmt->bindValue(':busca', "%$busca%");
+    } else {
+        $stmt = $pdo->prepare("
+            SELECT * FROM agendamentos
+            WHERE data < CURDATE() AND status = 'confirmado'
+            ORDER BY data DESC, horario DESC
+            LIMIT :limit OFFSET :offset
+        ");
+    }
+    $stmt->bindValue(':limit',  $por_pagina, PDO::PARAM_INT);
+    $stmt->bindValue(':offset', $offset,     PDO::PARAM_INT);
+    $stmt->execute();
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function contar_historico(string $busca = ''): int
+{
+    $pdo = conectar_banco();
+    if ($busca) {
+        $stmt = $pdo->prepare("
+            SELECT COUNT(*) FROM agendamentos
+            WHERE data < CURDATE() AND status = 'confirmado'
+              AND (nome LIKE :busca OR servico LIKE :busca)
+        ");
+        $stmt->execute([':busca' => "%$busca%"]);
+    } else {
+        $stmt = $pdo->query("
+            SELECT COUNT(*) FROM agendamentos
+            WHERE data < CURDATE() AND status = 'confirmado'
+        ");
+        $stmt->execute();
+    }
+    return (int) $stmt->fetchColumn();
+}
+
+function faturamento_historico(string $busca = ''): float
+{
+    $pdo = conectar_banco();
+    if ($busca) {
+        $stmt = $pdo->prepare("
+            SELECT COALESCE(SUM(valor), 0) FROM agendamentos
+            WHERE data < CURDATE() AND status = 'confirmado'
+              AND valor IS NOT NULL
+              AND (nome LIKE :busca OR servico LIKE :busca)
+        ");
+        $stmt->execute([':busca' => "%$busca%"]);
+    } else {
+        $stmt = $pdo->query("
+            SELECT COALESCE(SUM(valor), 0) FROM agendamentos
+            WHERE data < CURDATE() AND status = 'confirmado'
+              AND valor IS NOT NULL
+        ");
+        $stmt->execute();
+    }
+    return (float) $stmt->fetchColumn();
+}
+
+
+// ============================================================
+//  HISTÓRICO — checar se agendamento é de data passada
+// ============================================================
+
+function agendamento_e_passado(int $id): bool
+{
+    $pdo  = conectar_banco();
+    $stmt = $pdo->prepare("SELECT data FROM agendamentos WHERE id = :id");
+    $stmt->execute([':id' => $id]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$row) return false;
+    return $row['data'] < date('Y-m-d');
+}
+
+function criar_tabela_usuarios(): void
+{
     $pdo = conectar_banco();
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS usuarios (
@@ -238,7 +421,8 @@ function criar_tabela_usuarios(): void {
 //  AUTH — criar barbeiro (rodar uma vez via setup.php)
 // ============================================================
 
-function criar_barbeiro(string $usuario, string $senha): bool {
+function criar_barbeiro(string $usuario, string $senha): bool
+{
     $pdo  = conectar_banco();
     $hash = password_hash($senha, PASSWORD_BCRYPT);
     $stmt = $pdo->prepare("
@@ -252,7 +436,8 @@ function criar_barbeiro(string $usuario, string $senha): bool {
 //  AUTH — verificar login
 // ============================================================
 
-function verificar_login(string $usuario, string $senha): bool {
+function verificar_login(string $usuario, string $senha): bool
+{
     $pdo  = conectar_banco();
     $stmt = $pdo->prepare("SELECT senha FROM usuarios WHERE usuario = :usuario");
     $stmt->execute([':usuario' => $usuario]);
@@ -266,7 +451,8 @@ function verificar_login(string $usuario, string $senha): bool {
 //  AUTH — checar se sessão está ativa
 // ============================================================
 
-function exigir_login(): void {
+function exigir_login(): void
+{
     if (session_status() === PHP_SESSION_NONE) session_start();
     if (empty($_SESSION['barbeiro_logado'])) {
         header('Location: login.php');
@@ -279,7 +465,8 @@ function exigir_login(): void {
 //  AUTH — fazer logout
 // ============================================================
 
-function fazer_logout(): void {
+function fazer_logout(): void
+{
     if (session_status() === PHP_SESSION_NONE) session_start();
     $_SESSION = [];
     session_destroy();
